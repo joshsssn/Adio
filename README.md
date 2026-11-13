@@ -14,24 +14,25 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshot.png" width="360" alt="Capture d'écran d'Adio">
+  <img src="docs/screenshot.png" width="720" alt="Adio en thème clair et sombre">
 </p>
 
 ## Fonctionnalités
 
+- **Interface minimaliste** : une carte compacte sans bordure, en thème clair ou sombre (il suit Windows, ou se bascule avec la 3ᵉ pastille). Elle affiche la pochette, le format audio (`FLAC · 44.1 kHz · 16-bit`), une barre de progression fine, les commandes et le volume sur une seule ligne, puis les onglets File, Historique et Playlists.
 - **Lecture de dossier** : ouvre un son et Adio charge tout son dossier. *Suivant* joue le titre suivant du même dossier, en ordre naturel (`2` avant `10`).
 - **Formats** : MP3, WAV, AIFF, FLAC, ALAC / AAC (`.m4a`), OGG Vorbis.
 - **Pochette et tags** : affiche l'artwork intégré, le titre, l'artiste et l'album. Sans tags, le nom du fichier sert de titre.
 - **Lecture aléatoire** : chaque titre passe une fois avant que le cycle recommence.
 - **Répétition** : désactivée, toute la liste ou un seul titre.
 - **Barre de progression** : clique ou glisse pour te déplacer dans le morceau. Volume réglable.
-- **Historique** : les 1000 dernières écoutes, datées. Un clic relance le titre.
-- **Playlists** : au format `.m3u8` standard, compatibles VLC, foobar2000, etc. Clic droit sur un titre → *Ajouter à une playlist*.
+- **Historique** : les 1000 dernières écoutes, datées. Un clic relance le titre. Dans l'onglet *Historique*.
+- **Playlists** : au format `.m3u8` standard, compatibles VLC, foobar2000, etc. Ajoute le titre en cours avec le bouton de l'en-tête, ou fais un clic droit sur un titre de la liste.
 - **Touches multimédia** : les touches play/pause/suivant/précédent du clavier, et l'overlay média de Windows avec titre et pochette.
 - **Glisser-déposer** de fichiers ou de dossiers sur la fenêtre.
 - **« Ouvrir avec »** : clic droit sur un son → *Ouvrir avec* → `Adio.exe`.
 - **Portable** : réglages, historique et playlists sont rangés dans `AdioData/`, à côté de l'exe. Copie le tout sur une clé USB et tout suit.
-- **Léger** : démarrage instantané, ~0 % CPU en pause, mode compact (liste masquée).
+- **Léger** : démarrage instantané, ~0 % CPU en pause. Réduis la hauteur de la fenêtre pour ne garder que le lecteur.
 
 ## Raccourcis
 
@@ -40,11 +41,15 @@
 | `Espace` | Lecture / pause |
 | `Ctrl + →` / `Ctrl + ←` | Titre suivant / précédent |
 | `→` / `←` | Avancer / reculer de 5 s |
-| `↑` / `↓` | Volume |
+| `↑` / `↓` | Volume (ou molette sur le curseur de volume) |
 | `S` | Lecture aléatoire |
 | `R` | Répétition (off → tout → un) |
 | `M` | Muet |
 | `Ctrl + O` | Ouvrir un dossier |
+| `Q` / `H` / `P` | Afficher la file / l'historique / les playlists |
+| `Échap` | Revenir à la file |
+
+Le chemin affiché dans la barre de titre est cliquable : il ouvre un nouveau dossier.
 
 ## Utilisation
 
@@ -81,4 +86,4 @@ ADIO_TEST_DIR="C:/chemin/vers/sons" cargo test formats -- --nocapture
 
 ## Licence
 
-[MIT](LICENSE)
+[MIT](LICENSE). La police [Inter](https://rsms.me/inter/) est distribuée sous licence SIL OFL (`assets/fonts/LICENSE.txt`).

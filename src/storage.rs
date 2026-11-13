@@ -30,12 +30,13 @@ pub struct Settings {
     pub shuffle: bool,
     pub repeat: Repeat,
     pub last_path: Option<PathBuf>,
-    pub show_list: bool,
+    /// Thème sombre (None = suivre Windows).
+    pub dark: Option<bool>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { volume: 0.8, shuffle: false, repeat: Repeat::Off, last_path: None, show_list: true }
+        Self { volume: 0.8, shuffle: false, repeat: Repeat::Off, last_path: None, dark: None }
     }
 }
 

@@ -1,6 +1,6 @@
 [package]
 name = "adio"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Petit lecteur audio portable et ultra rapide"
 license = "MIT"
@@ -14,6 +14,7 @@ symphonia = { version = "0.5.4", features = ["all"] }
 lofty = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 souvlaki = "0.8"
+egui-phosphor = { version = "0.9", features = ["light", "regular", "fill"] }
 rfd = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
