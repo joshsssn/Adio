@@ -1,12 +1,12 @@
 <p align="center">
-  <img src="assets/logo.png" width="128" alt="Adio">
+  <img src="assets/icon-256.png" width="128" alt="Adio">
 </p>
 
 <h1 align="center">Adio</h1>
 
 <p align="center">
   Un petit lecteur audio portable, ultra rapide, écrit en Rust.<br>
-  Un seul <code>.exe</code> de ~7 Mo, aucune installation.
+  Un seul <code>.exe</code> de ~8 Mo, aucune installation.
 </p>
 
 <p align="center">
