@@ -121,14 +121,6 @@ impl Queue {
         }
         self.current()
     }
-
-    pub fn prev(&mut self) -> Option<&PathBuf> {
-        if self.tracks.is_empty() {
-            return None;
-        }
-        self.pos = if self.pos == 0 { self.order.len() - 1 } else { self.pos - 1 };
-        self.current()
-    }
 }
 
 pub fn scan_folder(dir: &Path) -> Vec<PathBuf> {

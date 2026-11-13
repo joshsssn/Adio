@@ -26,6 +26,7 @@
 - **Formats** : MP3, WAV, AIFF, FLAC, ALAC / AAC (`.m4a`), OGG Vorbis.
 - **Pochette et tags** : affiche l'artwork intégré, le titre, l'artiste et l'album. Sans tags, le nom du fichier sert de titre.
 - **Lecture aléatoire** : chaque titre passe une fois avant que le cycle recommence.
+- **Précédent / Suivant comme Spotify** : *Précédent* rejoue le titre réellement écouté juste avant, même en aléatoire. Après un ou plusieurs *Précédent*, *Suivant* repasse par les mêmes titres jusqu'à celui que tu écoutais.
 - **Répétition** : désactivée, toute la liste ou un seul titre.
 - **Barre de progression** : clique ou glisse pour te déplacer dans le morceau. Volume réglable.
 - **Recherche** : la loupe à droite des onglets (ou `Ctrl+F`) filtre l'onglet affiché (dossier, file d'attente, historique, playlists). Elle ignore les accents et les majuscules.
@@ -34,6 +35,7 @@
 - **Touches multimédia** : les touches play/pause/suivant/précédent du clavier, et l'overlay média de Windows avec titre et pochette.
 - **Glisser-déposer** de fichiers ou de dossiers sur la fenêtre.
 - **« Ouvrir avec »** : clic droit sur un son → *Ouvrir avec* → `Adio.exe`.
+- **Une seule fenêtre** : ouvrir un autre son pendant qu'Adio tourne le joue dans la fenêtre existante, qui passe au premier plan. Plusieurs fichiers ouverts d'un coup forment une sélection.
 - **Portable** : réglages, historique et playlists sont rangés dans `AdioData/`, à côté de l'exe. Copie le tout sur une clé USB et tout suit.
 - **Léger** : démarrage instantané, ~0 % CPU en pause. Réduis la hauteur de la fenêtre pour ne garder que le lecteur.
 

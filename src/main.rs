@@ -5,6 +5,7 @@ mod media_keys;
 mod meta;
 mod player;
 mod queue;
+mod single;
 mod storage;
 mod ui;
 
@@ -12,7 +13,17 @@ use eframe::egui;
 use std::path::PathBuf;
 
 fn main() -> eframe::Result {
-    let arg = std::env::args_os().nth(1).map(PathBuf::from).filter(|p| p.exists());
+    let arg = std::env::args_os()
+        .nth(1)
+        .map(PathBuf::from)
+        .filter(|p| p.exists())
+        .map(|p| std::path::absolute(&p).unwrap_or(p));
+
+    // Instance unique : si Adio tourne déjà, on lui confie le fichier et on s'arrête là.
+    let listener = match single::startup(arg.as_deref()) {
+        single::Startup::Forwarded => return Ok(()),
+        single::Startup::Primary(l) => l,
+    };
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Adio")
@@ -27,5 +38,5 @@ fn main() -> eframe::Result {
     }
 
     let options = eframe::NativeOptions { viewport, centered: true, ..Default::default() };
-    eframe::run_native("Adio", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, arg)))))
+    eframe::run_native("Adio", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, arg, listener)))))
 }

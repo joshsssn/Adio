@@ -10,7 +10,7 @@ use eframe::egui::{self, Align2, Color32, Key, Pos2, Rect, Stroke, Vec2};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Marge transparente autour de la carte (ombre + poignées de redimensionnement).
 const MARGIN: f32 = 12.0;
@@ -101,10 +101,25 @@ pub struct App {
     search_focus: bool,
     /// « Effacer l'historique » attend une confirmation.
     confirm_clear: bool,
+
+    /// Navigation façon Spotify : titres réellement joués avant / après le titre courant.
+    back: Vec<PathBuf>,
+    forward: Vec<PathBuf>,
+    /// Vrai pendant un déplacement dans `back` / `forward` (n'altère pas les piles).
+    history_nav: bool,
+
+    /// Fichiers reçus d'autres lancements (instance unique), regroupés avant ouverture.
+    ipc_rx: Option<Receiver<Option<PathBuf>>>,
+    pending_open: Vec<PathBuf>,
+    pending_at: Option<Instant>,
 }
 
 impl App {
-    pub fn new(cc: &eframe::CreationContext<'_>, arg: Option<PathBuf>) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        arg: Option<PathBuf>,
+        listener: Option<interprocess::local_socket::prelude::LocalSocketListener>,
+    ) -> Self {
         ui::setup_fonts(&cc.egui_ctx);
         let storage = Storage::init();
         let settings = storage.load_settings();
@@ -148,8 +163,19 @@ impl App {
             search: String::new(),
             search_focus: false,
             confirm_clear: false,
+            back: Vec::new(),
+            forward: Vec::new(),
+            history_nav: false,
+            ipc_rx: None,
+            pending_open: Vec::new(),
+            pending_at: None,
         };
         app.refresh_playlists();
+        if let Some(l) = listener {
+            let (tx, rx) = channel();
+            crate::single::listen(l, tx, cc.egui_ctx.clone());
+            app.ipc_rx = Some(rx);
+        }
         if !app.player.has_output() {
             app.error = Some("Aucune sortie audio détectée".into());
         }
@@ -216,6 +242,15 @@ impl App {
 
     /// Charge et (éventuellement) lance n'importe quel fichier.
     fn play_path(&mut self, ctx: &egui::Context, path: PathBuf, autoplay: bool) {
+        if !self.history_nav {
+            if let Some(cur) = self.now.clone().filter(|c| *c != path) {
+                self.back.push(cur);
+                if self.back.len() > 500 {
+                    self.back.remove(0);
+                }
+            }
+            self.forward.clear();
+        }
         self.now = Some(path.clone());
         let (info, cover_bytes) = meta::read(&path, true);
         self.meta_cache.insert(path.clone(), info.clone());
@@ -273,11 +308,6 @@ impl App {
         self.settings_dirty = true;
     }
 
-    /// Vrai si le titre en lecture est celui du contexte (et non un titre de la file).
-    fn playing_context(&self) -> bool {
-        self.now.is_some() && self.now.as_ref() == self.queue.current()
-    }
-
     fn next(&mut self, ctx: &egui::Context, auto: bool) {
         // Répéter le titre : on rejoue ce qui est en cours, d'où qu'il vienne.
         if auto && self.settings.repeat == Repeat::One {
@@ -285,6 +315,16 @@ impl App {
                 self.play_path(ctx, p, true);
                 return;
             }
+        }
+        // Après un ou plusieurs « précédent », on repasse par les titres déjà écoutés.
+        if let Some(p) = self.forward.pop() {
+            if let Some(cur) = self.now.clone() {
+                self.back.push(cur);
+            }
+            self.history_nav = true;
+            self.play_path(ctx, p, true);
+            self.history_nav = false;
+            return;
         }
         // La file d'attente passe avant la suite du dossier.
         if !self.up_next.is_empty() {
@@ -301,15 +341,20 @@ impl App {
         }
     }
 
+    /// Comme Spotify : au-delà de 3 s on revient au début, sinon on rejoue le titre écouté juste avant.
     fn prev(&mut self, ctx: &egui::Context) {
-        if self.player.position() > Duration::from_secs(3) {
+        if self.player.position() > Duration::from_secs(3) || self.back.is_empty() {
             self.player.seek(Duration::ZERO);
             self.media_state = None;
-        } else if !self.playing_context() && self.queue.current().is_some() {
-            // On sortait de la file d'attente : retour au titre du contexte.
-            self.play_current(ctx, true);
-        } else if self.queue.prev().is_some() {
-            self.play_current(ctx, true);
+            return;
+        }
+        if let Some(p) = self.back.pop() {
+            if let Some(cur) = self.now.clone() {
+                self.forward.push(cur);
+            }
+            self.history_nav = true;
+            self.play_path(ctx, p, true);
+            self.history_nav = false;
         }
     }
 
@@ -610,6 +655,41 @@ impl App {
                 17 => self.open_search(),
                 _ => {}
             }
+        }
+    }
+
+    /// Lancements suivants (instance unique) : premier plan + ouverture.
+    /// Une sélection multiple dans l'Explorateur lance un processus par fichier :
+    /// on regroupe ce qui arrive en moins de 200 ms en une seule sélection.
+    fn handle_ipc(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.ipc_rx else { return };
+        let mut focus = false;
+        for msg in rx.try_iter() {
+            focus = true;
+            if let Some(p) = msg {
+                self.pending_open.push(p);
+                self.pending_at = Some(Instant::now());
+            }
+        }
+        if focus {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        }
+        if self.pending_open.is_empty() {
+            return;
+        }
+        if self.pending_at.is_some_and(|t| t.elapsed() >= Duration::from_millis(200)) {
+            let mut files = std::mem::take(&mut self.pending_open);
+            self.pending_at = None;
+            files.dedup();
+            if files.len() == 1 {
+                self.open_path(ctx, &files[0], true);
+            } else {
+                files.sort_by(|a, b| crate::queue::natural_cmp(&a.to_string_lossy().to_lowercase(), &b.to_string_lossy().to_lowercase()));
+                self.open_files(ctx, files);
+            }
+        } else {
+            ctx.request_repaint_after(Duration::from_millis(50));
         }
     }
 
@@ -1165,7 +1245,7 @@ impl App {
             Self::no_result(ui, self.search.trim());
             return;
         }
-        let cur = if self.playing_context() { self.queue.current_index() } else { None };
+        let cur = self.now.as_ref().and_then(|n| self.queue.tracks.iter().position(|t| t == n));
         let mut sa = egui::ScrollArea::vertical().auto_shrink(false).id_salt("queue");
         if self.scroll_to_current {
             if let Some(row) = cur.and_then(|c| idx.iter().position(|&i| i == c)) {
@@ -1556,6 +1636,7 @@ impl eframe::App for App {
 
         self.handle_input(ctx);
         self.handle_media(ctx);
+        self.handle_ipc(ctx);
 
         // Enchaînement automatique en fin de piste
         if self.player.is_loaded() && self.player.is_finished() {
