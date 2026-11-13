@@ -297,10 +297,10 @@ pub fn tabs(ui: &mut Ui, rect: Rect, labels: &[&str], selected: usize) -> (Optio
         if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             clicked = Some(i);
         }
-        x += w + 20.0;
+        x += w + 17.0;
     }
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.line));
-    (clicked, x - 20.0)
+    (clicked, x - 17.0)
 }
 
 /// Vignette carrée arrondie : texture ou tuile neutre avec icône.
@@ -443,6 +443,87 @@ pub fn queue_row(
     }
     let cursor = if dragging { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab };
     (r.on_hover_cursor(cursor), removed)
+}
+
+/// Barre de recherche arrondie : loupe · champ · effacer. Renvoie (champ, effacer cliqué).
+pub fn search_bar(ui: &mut Ui, rect: Rect, buf: &mut String, hint: &str, focus: bool) -> (Response, bool) {
+    let p = pal();
+    let id = ui.id().with("search_field");
+    let focused = ui.memory(|m| m.has_focus(id));
+    let stroke = if focused { Stroke::new(1.0, p.faint) } else { Stroke::new(1.0, p.line) };
+    ui.painter().rect(rect, 10, p.tile, stroke, egui::StrokeKind::Inside);
+    paint_icon(ui, Pos2::new(rect.left() + 16.0, rect.center().y), icon::MAGNIFYING_GLASS, ph(15.0), if focused { p.soft } else { p.dim });
+
+    let has_text = !buf.is_empty();
+    let field = Rect::from_min_max(
+        Pos2::new(rect.left() + 32.0, rect.center().y - 9.0),
+        Pos2::new(rect.right() - if has_text { 32.0 } else { 10.0 }, rect.center().y + 9.0),
+    );
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(field));
+    let r = child.add(
+        egui::TextEdit::singleline(buf)
+            .id(id)
+            .frame(false)
+            .hint_text(egui::RichText::new(hint).color(p.faint))
+            .font(regular(13.0))
+            .text_color(p.text)
+            .margin(egui::Margin::ZERO)
+            .desired_width(field.width()),
+    );
+    if focus {
+        r.request_focus();
+    }
+    let mut cleared = false;
+    if has_text {
+        let c = Pos2::new(rect.right() - 16.0, rect.center().y);
+        let b = ui.interact(Rect::from_center_size(c, Vec2::splat(22.0)), ui.id().with("search_clear"), Sense::click());
+        ui.painter().circle_filled(c, 8.0, if b.hovered() { p.dim } else { p.faint });
+        paint_icon(ui, c, icon::X, ph(9.0), p.card);
+        cleared = b.on_hover_text("Effacer la recherche").on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+    }
+    (r, cleared)
+}
+
+/// Rangée d'outils en tête de liste : intitulé à gauche, lien d'action à droite.
+pub fn list_toolbar(ui: &mut Ui, id: &str, label: &str, action: Option<(&str, &str)>, danger: bool) -> bool {
+    let p = pal();
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width() - GUTTER, 30.0), Sense::hover());
+    let cy = rect.center().y + 2.0;
+    text(ui, Pos2::new(rect.left(), cy), Align2::LEFT_CENTER, label, semibold(10.5), p.dim, rect.width() * 0.6);
+    let Some((glyph, link_label)) = action else { return false };
+    let font = regular(11.5);
+    let tw = text_width(ui, link_label, font.clone());
+    let iw = if glyph.is_empty() { 0.0 } else { 17.0 };
+    let hit = Rect::from_min_max(Pos2::new(rect.right() - tw - iw - 6.0, cy - 11.0), Pos2::new(rect.right() + 4.0, cy + 11.0));
+    let r = ui.interact(hit, ui.id().with(id), Sense::click());
+    let col = match (danger, r.hovered()) {
+        (true, _) => rgb(0xC2, 0x5B, 0x4E),
+        (false, true) => p.text,
+        (false, false) => p.dim,
+    };
+    if !glyph.is_empty() {
+        paint_icon(ui, Pos2::new(rect.right() - tw - 9.0, cy), glyph, ph(13.0), col);
+    }
+    text(ui, Pos2::new(rect.right(), cy), Align2::RIGHT_CENTER, link_label, font, col, tw + 2.0);
+    r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked()
+}
+
+/// Minuscules sans accents, pour une recherche tolérante.
+pub fn fold(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| c.to_lowercase())
+        .map(|c| match c {
+            'à' | 'á' | 'â' | 'ä' | 'ã' | 'å' => 'a',
+            'ç' => 'c',
+            'è' | 'é' | 'ê' | 'ë' => 'e',
+            'ì' | 'í' | 'î' | 'ï' => 'i',
+            'ñ' => 'n',
+            'ò' | 'ó' | 'ô' | 'ö' | 'õ' => 'o',
+            'ù' | 'ú' | 'û' | 'ü' => 'u',
+            'ý' | 'ÿ' => 'y',
+            _ => c,
+        })
+        .collect()
 }
 
 /// Petit intitulé de section (EN COURS, ENSUITE…).

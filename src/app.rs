@@ -94,6 +94,13 @@ pub struct App {
     /// Mode mini (pochette + commandes de base) et taille à restaurer.
     mini: bool,
     full_size: Option<Vec2>,
+
+    /// Recherche dans l'onglet courant.
+    search_open: bool,
+    search: String,
+    search_focus: bool,
+    /// « Effacer l'historique » attend une confirmation.
+    confirm_clear: bool,
 }
 
 impl App {
@@ -137,6 +144,10 @@ impl App {
             drag_from: None,
             mini: false,
             full_size: None,
+            search_open: false,
+            search: String::new(),
+            search_focus: false,
+            confirm_clear: false,
         };
         app.refresh_playlists();
         if !app.player.has_output() {
@@ -395,6 +406,7 @@ impl App {
         }
         self.new_pl = None;
         self.rename_pl = None;
+        self.confirm_clear = false;
         self.panel = p;
     }
 
@@ -484,6 +496,41 @@ impl App {
         }
     }
 
+    fn open_search(&mut self) {
+        self.search_open = true;
+        self.search_focus = true;
+    }
+
+    fn close_search(&mut self) {
+        self.search_open = false;
+        self.search.clear();
+    }
+
+    /// Requête normalisée, si une recherche est active.
+    fn query(&self) -> Option<String> {
+        let q = self.search.trim();
+        (self.search_open && !q.is_empty()).then(|| ui::fold(q))
+    }
+
+    /// Tous les mots de la requête apparaissent dans le titre, l'artiste, l'album ou le nom du fichier.
+    fn text_matches(hay: &str, q: &str) -> bool {
+        let hay = ui::fold(hay);
+        q.split_whitespace().all(|w| hay.contains(w))
+    }
+
+    fn track_matches(&self, p: &Path, q: &str) -> bool {
+        let stem = meta::file_stem(p);
+        let hay = match self.meta_cache.get(p) {
+            Some(i) => format!("{} {} {} {}", i.title, i.artist, i.album, stem),
+            None => stem,
+        };
+        Self::text_matches(&hay, q)
+    }
+
+    fn no_result(ui: &mut egui::Ui, q: &str) {
+        Self::empty_state(ui, &format!("Aucun résultat pour « {q} »"), None);
+    }
+
     fn toggle_mini(&mut self, ctx: &egui::Context) {
         self.mini = !self.mini;
         if self.mini {
@@ -527,6 +574,7 @@ impl App {
             (M::NONE, Key::P),
             (M::NONE, Key::D),
             (M::NONE, Key::N),
+            (M::CTRL, Key::F),
         ];
         let mut keys: Vec<usize> = Vec::new();
         ctx.input_mut(|i| {
@@ -549,6 +597,7 @@ impl App {
                 8 => self.cycle_repeat(),
                 9 => self.toggle_mute(),
                 10 => self.pick_folder(ctx),
+                11 if self.search_open => self.close_search(),
                 11 => {
                     let back = if matches!(self.panel, Panel::Playlist(_)) { Panel::Playlists } else { Panel::Queue };
                     self.go(ctx, back);
@@ -558,6 +607,7 @@ impl App {
                 14 => self.go(ctx, Panel::Playlists),
                 15 => self.go(ctx, Panel::Queue),
                 16 => self.toggle_mini(ctx),
+                17 => self.open_search(),
                 _ => {}
             }
         }
@@ -692,9 +742,20 @@ impl App {
         let loc_r = ui.interact(loc_rect, ui.id().with("loc"), egui::Sense::click());
         let loc_col = if loc_r.hovered() { p.soft } else { p.dim };
         ui::text(ui, loc_rect.center(), Align2::CENTER_CENTER, &loc, ui::regular(11.5), loc_col, loc_max);
-        if loc_r.on_hover_text("Ouvrir un dossier (Ctrl+O)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+        let loc_r = loc_r.on_hover_text("Ouvrir un dossier (Ctrl+O) — clic droit : fichiers").on_hover_cursor(egui::CursorIcon::PointingHand);
+        if loc_r.clicked() {
             acts.push(Act::PickFolder);
         }
+        loc_r.context_menu(|ui| {
+            if ui::menu_item(ui, icon::FOLDER_OPEN, "Ouvrir un dossier…").clicked() {
+                acts.push(Act::PickFolder);
+                ui.close_menu();
+            }
+            if ui::menu_item(ui, icon::FILE_AUDIO, "Ouvrir des fichiers…").clicked() {
+                acts.push(Act::PickFiles);
+                ui.close_menu();
+            }
+        });
         ui.painter().hline(card.x_range(), card.top() + bar_h, Stroke::new(1.0, p.line));
 
         if self.mini {
@@ -860,55 +921,15 @@ impl App {
         if let Some(i) = tab_click {
             acts.push(Act::Go([Panel::Queue, Panel::UpNext, Panel::History, Panel::Playlists][i].clone()));
         }
-        // Action contextuelle (icône) à droite des onglets, seulement s'il reste de la place
-        let ac = Pos2::new(right - 10.0, tabs_rect.center().y - 1.0);
-        let room = tabs_end + 14.0 < ac.x - 13.0;
-        match self.panel {
-            _ if !room => {}
-            Panel::Queue => {
-                let r = ui::icon_button(ui, "open_dir", ac, 26.0, icon::FOLDER_OPEN, ui::ph(16.0), p.dim, true)
-                    .on_hover_text("Ouvrir un dossier (Ctrl+O) — clic droit : fichiers");
-                if r.clicked() {
-                    acts.push(Act::PickFolder);
-                }
-                r.context_menu(|ui| {
-                    if ui::menu_item(ui, icon::FOLDER_OPEN, "Ouvrir un dossier…").clicked() {
-                        acts.push(Act::PickFolder);
-                        ui.close_menu();
-                    }
-                    if ui::menu_item(ui, icon::FILE_AUDIO, "Ouvrir des fichiers…").clicked() {
-                        acts.push(Act::PickFiles);
-                        ui.close_menu();
-                    }
-                });
+        // Loupe à droite des onglets : recherche dans l'onglet courant
+        let sc = Pos2::new(right - 10.0, tabs_rect.center().y - 1.0);
+        if tabs_end + 6.0 < sc.x - 12.0 {
+            let col = if self.search_open { p.text } else { p.dim };
+            let r = ui::icon_button(ui, "search_btn", sc, 26.0, icon::MAGNIFYING_GLASS, ui::ph(16.0), col, true)
+                .on_hover_text("Rechercher dans cet onglet (Ctrl+F)");
+            if r.clicked() {
+                if self.search_open { self.close_search() } else { self.open_search() }
             }
-            Panel::UpNext if n_up > 0 => {
-                if ui::icon_button(ui, "clear_q", ac, 26.0, icon::TRASH, ui::ph(15.0), p.dim, true)
-                    .on_hover_text("Vider la file d'attente")
-                    .clicked()
-                {
-                    acts.push(Act::QueueClear);
-                }
-            }
-            Panel::History if !self.history.is_empty() => {
-                if ui::icon_button(ui, "clear_hist", ac, 26.0, icon::TRASH, ui::ph(15.0), p.dim, true)
-                    .on_hover_text("Double-clic pour effacer l'historique")
-                    .double_clicked()
-                {
-                    self.history.clear();
-                    self.storage.save_history(&mut self.history);
-                }
-            }
-            Panel::Playlists => {
-                if ui::icon_button(ui, "new_pl", ac, 26.0, icon::PLUS, ui::ph(16.0), p.dim, true)
-                    .on_hover_text("Nouvelle playlist")
-                    .clicked()
-                    && self.new_pl.is_none()
-                {
-                    self.new_pl = Some(String::new());
-                }
-            }
-            _ => {}
         }
 
         // Pied de carte : infos · bascule jour / nuit
@@ -921,8 +942,33 @@ impl App {
             self.set_dark(&ctx, d);
         }
 
+        // Barre de recherche (sous les onglets)
+        let mut list_top = tabs_rect.bottom() + 4.0;
+        if self.search_open {
+            let bar = Rect::from_min_max(Pos2::new(left, list_top + 6.0), Pos2::new(right, list_top + 40.0));
+            let hint = match self.panel {
+                Panel::Queue => "Rechercher dans le dossier",
+                Panel::UpNext => "Rechercher dans la file d'attente",
+                Panel::History => "Rechercher dans l'historique",
+                Panel::Playlists => "Rechercher une playlist",
+                Panel::Playlist(_) => "Rechercher dans la playlist",
+            };
+            let focus = std::mem::take(&mut self.search_focus);
+            let (r, cleared) = ui::search_bar(ui, bar, &mut self.search, hint, focus);
+            if cleared {
+                self.search.clear();
+                self.search_focus = true;
+            }
+            if r.has_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                self.close_search();
+            } else if r.lost_focus() && ui.input(|i| i.key_pressed(Key::Escape)) {
+                self.close_search();
+            }
+            list_top = bar.bottom() + 4.0;
+        }
+
         // Liste (la barre de défilement déborde dans la marge droite)
-        let area = Rect::from_min_max(Pos2::new(left, tabs_rect.bottom() + 4.0), Pos2::new(right + ui::GUTTER, list_bottom - 2.0));
+        let area = Rect::from_min_max(Pos2::new(left, list_top), Pos2::new(right + ui::GUTTER, list_bottom - 2.0));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
         child.set_clip_rect(area.expand2(Vec2::new(8.0, 0.0)));
         match self.panel.clone() {
@@ -1110,21 +1156,32 @@ impl App {
             }
             return;
         }
+        let q = self.query();
+        let idx: Vec<usize> = match &q {
+            Some(q) => (0..n).filter(|&i| self.track_matches(&self.queue.tracks[i], q)).collect(),
+            None => (0..n).collect(),
+        };
+        if idx.is_empty() {
+            Self::no_result(ui, self.search.trim());
+            return;
+        }
         let cur = if self.playing_context() { self.queue.current_index() } else { None };
         let mut sa = egui::ScrollArea::vertical().auto_shrink(false).id_salt("queue");
         if self.scroll_to_current {
-            if let Some(c) = cur {
-                sa = sa.vertical_scroll_offset((c as f32 * ui::ROW_H - ui.available_height() / 2.0 + ui::ROW_H / 2.0).max(0.0));
+            if let Some(row) = cur.and_then(|c| idx.iter().position(|&i| i == c)) {
+                sa = sa.vertical_scroll_offset((row as f32 * ui::ROW_H - ui.available_height() / 2.0 + ui::ROW_H / 2.0).max(0.0));
             }
             self.scroll_to_current = false;
         }
-        sa.show_rows(ui, ui::ROW_H, n, |ui, range| {
+        let m = idx.len();
+        sa.show_rows(ui, ui::ROW_H, m, |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            for i in range {
+            for k in range {
+                let i = idx[k];
                 let p = &self.queue.tracks[i];
                 let (title, kind, d) = self.track_texts(p);
                 let (r, add) = ui::list_row_ex(
-                    ui, self.thumbs.get(p), icon::MUSIC_NOTE, Some(&kind), &title, &d, cur == Some(i), i + 1 < n, self.queue_action(p),
+                    ui, self.thumbs.get(p), icon::MUSIC_NOTE, Some(&kind), &title, &d, cur == Some(i), k + 1 < m, self.queue_action(p),
                 );
                 if add {
                     self.queue_toggle(p, acts);
@@ -1139,7 +1196,19 @@ impl App {
     /// File d'attente façon Spotify : en cours · ta file (réordonnable) · suite du contexte.
     fn ui_upnext(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
         let p = ui::pal();
-        let upcoming = self.queue.upcoming(40);
+        let q = self.query();
+        let mut upcoming = self.queue.upcoming(40);
+        if let Some(q) = &q {
+            upcoming.retain(|&i| self.track_matches(&self.queue.tracks[i], q));
+        }
+        let shown: Vec<usize> = match &q {
+            Some(q) => (0..self.up_next.len()).filter(|&i| self.track_matches(&self.up_next[i], q)).collect(),
+            None => (0..self.up_next.len()).collect(),
+        };
+        if q.is_some() && shown.is_empty() && upcoming.is_empty() {
+            Self::no_result(ui, self.search.trim());
+            return;
+        }
         if self.now.is_none() && self.up_next.is_empty() && upcoming.is_empty() {
             Self::empty_state(ui, "La file d'attente est vide.\nAjoute des titres avec ⊕ dans les autres onglets.", None);
             return;
@@ -1149,8 +1218,8 @@ impl App {
         egui::ScrollArea::vertical().auto_shrink(false).id_salt("upnext").show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
 
-            // En cours
-            if let Some(now) = self.now.clone() {
+            // En cours (masqué pendant une recherche)
+            if let (Some(now), None) = (self.now.clone(), &q) {
                 ui::section_label(ui, "EN COURS");
                 let (title, kind, d) = self.track_texts(&now);
                 let r = ui::list_row(ui, self.thumbs.get(&now), icon::MUSIC_NOTE, Some(&kind), &title, &d, true, false);
@@ -1158,20 +1227,24 @@ impl App {
             }
 
             // Ta file : glisser pour réordonner
-            if !self.up_next.is_empty() {
+            if !shown.is_empty() {
                 ui.add_space(6.0);
-                ui::section_label(ui, "ENSUITE DANS TA FILE");
+                if ui::list_toolbar(ui, "clear_q", "ENSUITE DANS TA FILE", Some((icon::TRASH, "Vider")), false) {
+                    acts.push(Act::QueueClear);
+                }
                 let n = self.up_next.len();
                 let mut rects = Vec::with_capacity(n);
-                for i in 0..n {
-                    let q = &self.up_next[i];
-                    let (title, kind, d) = self.track_texts(q);
+                // Pendant une recherche, pas de glisser-déposer (les positions seraient trompeuses).
+                let can_drag = q.is_none();
+                for (k, &i) in shown.iter().enumerate() {
+                    let item = &self.up_next[i];
+                    let (title, kind, d) = self.track_texts(item);
                     let dragging = self.drag_from == Some(i);
-                    let (r, removed) = ui::queue_row(ui, self.thumbs.get(q), &kind, &title, &d, dragging, i + 1 < n);
+                    let (r, removed) = ui::queue_row(ui, self.thumbs.get(item), &kind, &title, &d, dragging, k + 1 < shown.len());
                     rects.push(r.rect);
                     if removed {
                         acts.push(Act::QueueRemove(i));
-                    } else if r.drag_started() {
+                    } else if can_drag && r.drag_started() {
                         self.drag_from = Some(i);
                     } else if r.clicked() {
                         acts.push(Act::QueuePlayAt(i));
@@ -1196,7 +1269,7 @@ impl App {
                     });
                 }
                 // Glisser-déposer : ligne d'insertion puis déplacement au relâchement
-                if let (Some(from), Some(pos)) = (self.drag_from, pointer) {
+                if let (Some(from), Some(pos), true) = (self.drag_from, pointer, can_drag) {
                     let target = rects.iter().filter(|r| r.center().y < pos.y).count();
                     let y = if target < rects.len() { rects[target].top() } else { rects[rects.len() - 1].bottom() };
                     let x0 = rects[0].left();
@@ -1243,11 +1316,40 @@ impl App {
             Self::empty_state(ui, "Aucune écoute pour l'instant.", None);
             return;
         }
+        let q = self.query();
+        // Index dans l'ordre d'affichage (le plus récent d'abord)
+        let idx: Vec<usize> = (0..n)
+            .rev()
+            .filter(|&j| {
+                q.as_ref().is_none_or(|q| {
+                    let h = &self.history[j];
+                    Self::text_matches(&format!("{} {} {}", h.title, h.artist, meta::file_stem(&h.path)), q)
+                })
+            })
+            .collect();
+        if q.is_none() {
+            let label = format!("{n} ÉCOUTE{}", if n > 1 { "S" } else { "" });
+            let (g, l) = if self.confirm_clear { ("", "Confirmer l'effacement") } else { (icon::TRASH, "Effacer") };
+            if ui::list_toolbar(ui, "clear_hist", &label, Some((g, l)), self.confirm_clear) {
+                if self.confirm_clear {
+                    self.history.clear();
+                    self.storage.save_history(&mut self.history);
+                    self.confirm_clear = false;
+                    return;
+                }
+                self.confirm_clear = true;
+            }
+        }
+        if idx.is_empty() {
+            Self::no_result(ui, self.search.trim());
+            return;
+        }
         let today = chrono::Local::now().date_naive();
-        egui::ScrollArea::vertical().auto_shrink(false).id_salt("hist").show_rows(ui, ui::ROW_H, n, |ui, range| {
+        let m = idx.len();
+        egui::ScrollArea::vertical().auto_shrink(false).id_salt("hist").show_rows(ui, ui::ROW_H, m, |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for k in range {
-                let h = &self.history[n - 1 - k];
+                let h = &self.history[idx[k]];
                 let when = chrono::DateTime::from_timestamp(h.played_at, 0)
                     .map(|d| {
                         let d = d.with_timezone(&chrono::Local);
@@ -1257,7 +1359,7 @@ impl App {
                 let title = if h.artist.is_empty() { h.title.clone() } else { format!("{} — {}", h.title, h.artist) };
                 let kind = meta::ext_kind(&h.path);
                 let (r, add) = ui::list_row_ex(
-                    ui, self.thumbs.get(&h.path), icon::MUSIC_NOTE, Some(&kind), &title, &when, false, k + 1 < n, self.queue_action(&h.path),
+                    ui, self.thumbs.get(&h.path), icon::MUSIC_NOTE, Some(&kind), &title, &when, false, k + 1 < m, self.queue_action(&h.path),
                 );
                 let r = r.on_hover_text(h.path.display().to_string());
                 if add {
@@ -1271,6 +1373,14 @@ impl App {
     }
 
     fn ui_playlists(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+        let q = self.query();
+        if q.is_none() && !self.playlists.is_empty() && self.new_pl.is_none() {
+            let np = self.playlists.len();
+            let label = format!("{np} PLAYLIST{}", if np > 1 { "S" } else { "" });
+            if ui::list_toolbar(ui, "new_pl", &label, Some((icon::PLUS, "Nouvelle")), false) {
+                self.new_pl = Some(String::new());
+            }
+        }
         if let Some(buf) = &mut self.new_pl {
             ui.add_space(8.0);
             let r = ui::text_field(ui, buf, "Nom de la playlist, puis Entrée");
@@ -1292,10 +1402,16 @@ impl App {
             }
             return;
         }
-        let n = self.playlists.len();
+        let shown: Vec<&(String, usize)> =
+            self.playlists.iter().filter(|(name, _)| q.as_ref().is_none_or(|q| Self::text_matches(name, q))).collect();
+        if shown.is_empty() {
+            Self::no_result(ui, self.search.trim());
+            return;
+        }
+        let n = shown.len();
         egui::ScrollArea::vertical().auto_shrink(false).id_salt("pls").show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            for (k, (name, count)) in self.playlists.iter().enumerate() {
+            for (k, (name, count)) in shown.into_iter().enumerate() {
                 let info = format!("{count} titre{}", plural(*count));
                 let r = ui::list_row(ui, None, icon::PLAYLIST, None, name, &info, false, k + 1 < n);
                 if r.clicked() {
@@ -1371,13 +1487,21 @@ impl App {
             Self::empty_state(ui, "Playlist vide.\nAjoute le titre en cours depuis l'en-tête\nou par clic droit dans la file.", None);
             return;
         }
-        egui::ScrollArea::vertical().auto_shrink(false).id_salt("pl").show_rows(ui, ui::ROW_H, n, |ui, range| {
+        let q = self.query();
+        let idx: Vec<usize> = (0..n).filter(|&i| q.as_ref().is_none_or(|q| self.track_matches(&self.pl_tracks[i], q))).collect();
+        if idx.is_empty() {
+            Self::no_result(ui, self.search.trim());
+            return;
+        }
+        let m = idx.len();
+        egui::ScrollArea::vertical().auto_shrink(false).id_salt("pl").show_rows(ui, ui::ROW_H, m, |ui, range| {
             ui.spacing_mut().item_spacing.y = 0.0;
-            for i in range {
+            for k in range {
+                let i = idx[k];
                 let tp = &self.pl_tracks[i];
                 let (title, kind, d) = self.track_texts(tp);
                 let (r, add) =
-                    ui::list_row_ex(ui, self.thumbs.get(tp), icon::MUSIC_NOTE, Some(&kind), &title, &d, false, i + 1 < n, self.queue_action(tp));
+                    ui::list_row_ex(ui, self.thumbs.get(tp), icon::MUSIC_NOTE, Some(&kind), &title, &d, false, k + 1 < m, self.queue_action(tp));
                 if add {
                     self.queue_toggle(tp, acts);
                 } else if r.clicked() {

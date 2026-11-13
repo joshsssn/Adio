@@ -28,6 +28,7 @@
 - **Lecture aléatoire** : chaque titre passe une fois avant que le cycle recommence.
 - **Répétition** : désactivée, toute la liste ou un seul titre.
 - **Barre de progression** : clique ou glisse pour te déplacer dans le morceau. Volume réglable.
+- **Recherche** : la loupe à droite des onglets (ou `Ctrl+F`) filtre l'onglet affiché (dossier, file d'attente, historique, playlists). Elle ignore les accents et les majuscules.
 - **Historique** : les 1000 dernières écoutes, datées. Un clic relance le titre. Dans l'onglet *Historique*.
 - **Playlists** : au format `.m3u8` standard, compatibles VLC, foobar2000, etc. Ajoute le titre en cours avec le bouton de l'en-tête, ou fais un clic droit sur un titre de la liste.
 - **Touches multimédia** : les touches play/pause/suivant/précédent du clavier, et l'overlay média de Windows avec titre et pochette.
@@ -50,6 +51,7 @@
 | `Ctrl + O` | Ouvrir un dossier |
 | `D` / `Q` / `H` / `P` | Onglet Dossier / File d'attente / Historique / Playlists |
 | `N` | Mode mini |
+| `Ctrl + F` | Rechercher dans l'onglet |
 | `Échap` | Revenir à l'onglet Dossier |
 
 Le chemin affiché dans la barre de titre est cliquable : il ouvre un nouveau dossier.
