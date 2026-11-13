@@ -215,19 +215,19 @@ pub fn icon_button(ui: &mut Ui, id: &str, center: Pos2, size: f32, glyph: &str, 
     hand(r, enabled)
 }
 
-/// Bouton de barre de titre (mini, réduire, fermer). `danger` = survol rouge.
-pub fn title_button(ui: &mut Ui, id: &str, center: Pos2, glyph: &str, danger: bool) -> Response {
-    let p = pal();
-    let rect = Rect::from_center_size(center, Vec2::new(28.0, 24.0));
-    let r = ui.interact(rect, ui.id().with(id), Sense::click());
-    let (bg, fg) = match (r.hovered(), danger) {
-        (true, true) => (rgb(0xE0, 0x4F, 0x45), Color32::WHITE),
-        (true, false) => (p.hover, p.text),
-        _ => (Color32::TRANSPARENT, p.dim),
-    };
-    ui.painter().rect_filled(rect, 6, bg);
-    paint_icon(ui, center, glyph, ph(13.0), fg);
-    r
+// Couleurs des pastilles de fenêtre (identiques dans les deux thèmes)
+pub const DOT_CLOSE: Color32 = rgb(0x8B, 0xA3, 0x86);
+pub const DOT_MIN: Color32 = rgb(0xE0, 0xBE, 0x98);
+pub const DOT_MINI: Color32 = rgb(0xD3, 0xD2, 0xCE);
+
+/// Pastille de fenêtre ; le symbole apparaît au survol de la zone des pastilles.
+pub fn window_dot(ui: &mut Ui, id: &str, center: Pos2, color: Color32, glyph: &str, show_glyph: bool) -> Response {
+    let r = ui.interact(Rect::from_center_size(center, Vec2::splat(16.0)), ui.id().with(id), Sense::click());
+    ui.painter().circle_filled(center, 5.5, color);
+    if show_glyph {
+        paint_icon(ui, center, glyph, ph(8.0), Color32::from_black_alpha(150));
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Gros bouton lecture/pause.

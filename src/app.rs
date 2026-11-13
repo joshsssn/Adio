@@ -669,29 +669,29 @@ impl App {
         }
         Self::window_resize(&ctx, card);
 
-        // ---- barre de titre : emplacement à gauche · boutons de fenêtre à droite
+        // ---- barre de titre : emplacement centré · pastilles à droite
         let bar_h = 36.0;
         let ty = card.top() + bar_h / 2.0;
-        if ui::title_button(ui, "close", Pos2::new(card.right() - 22.0, ty), icon::X, true).on_hover_text("Fermer").clicked() {
+        let dots_zone = Rect::from_min_max(Pos2::new(card.right() - 80.0, card.top()), Pos2::new(card.right(), card.top() + bar_h));
+        let show = ui.rect_contains_pointer(dots_zone);
+        if ui::window_dot(ui, "close", Pos2::new(card.right() - 20.0, ty), ui::DOT_CLOSE, icon::X, show).on_hover_text("Fermer").clicked() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if ui::title_button(ui, "min", Pos2::new(card.right() - 52.0, ty), icon::MINUS, false).on_hover_text("Réduire").clicked() {
+        if ui::window_dot(ui, "min", Pos2::new(card.right() - 38.0, ty), ui::DOT_MIN, icon::MINUS, show).on_hover_text("Réduire").clicked() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
         let (mini_glyph, mini_tip) =
             if self.mini { (icon::ARROWS_OUT_SIMPLE, "Mode complet (N)") } else { (icon::ARROWS_IN_SIMPLE, "Mode mini (N)") };
-        if ui::title_button(ui, "mini", Pos2::new(card.right() - 82.0, ty), mini_glyph, false).on_hover_text(mini_tip).clicked() {
+        if ui::window_dot(ui, "mini", Pos2::new(card.right() - 56.0, ty), ui::DOT_MINI, mini_glyph, show).on_hover_text(mini_tip).clicked() {
             acts.push(Act::ToggleMini);
         }
         let loc = self.location();
-        let loc_x = card.left() + 18.0;
-        let loc_max = card.right() - 100.0 - loc_x - 18.0;
+        let loc_max = card.width() - 190.0;
         let lw = ui::text_width(ui, &loc, ui::regular(11.5)).min(loc_max);
-        let loc_rect = Rect::from_min_size(Pos2::new(loc_x - 4.0, ty - 11.0), Vec2::new(lw + 26.0, 22.0));
+        let loc_rect = Rect::from_center_size(Pos2::new(card.center().x, ty), Vec2::new(lw + 16.0, 22.0));
         let loc_r = ui.interact(loc_rect, ui.id().with("loc"), egui::Sense::click());
         let loc_col = if loc_r.hovered() { p.soft } else { p.dim };
-        ui::paint_icon(ui, Pos2::new(loc_x + 5.0, ty), icon::FOLDER_SIMPLE, ui::ph(12.0), loc_col);
-        ui::text(ui, Pos2::new(loc_x + 18.0, ty), Align2::LEFT_CENTER, &loc, ui::regular(11.5), loc_col, loc_max);
+        ui::text(ui, loc_rect.center(), Align2::CENTER_CENTER, &loc, ui::regular(11.5), loc_col, loc_max);
         if loc_r.on_hover_text("Ouvrir un dossier (Ctrl+O)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             acts.push(Act::PickFolder);
         }
