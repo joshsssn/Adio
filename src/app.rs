@@ -15,11 +15,17 @@ use std::time::Duration;
 /// Marge transparente autour de la carte (ombre + poignées de redimensionnement).
 const MARGIN: f32 = 12.0;
 const RADIUS: u8 = 16;
+/// Taille de fenêtre du mode mini.
+const MINI_W: f32 = 300.0;
+const MINI_H: f32 = 476.0;
 
 /// Contenu de la zone basse de la carte.
 #[derive(PartialEq, Clone)]
 enum Panel {
+    /// Pistes du dossier / de la playlist en cours (le « contexte »).
     Queue,
+    /// File d'attente façon Spotify : titres ajoutés à la main, joués en priorité.
+    UpNext,
     History,
     Playlists,
     Playlist(String),
@@ -36,6 +42,17 @@ enum Act {
     Go(Panel),
     PickFolder,
     PickFiles,
+    /// Ajoute à la fin de la file d'attente.
+    QueueAdd(PathBuf),
+    /// Insère en tête de la file d'attente (« Lire ensuite »).
+    QueuePlayNext(PathBuf),
+    QueueRemove(usize),
+    /// Déplace l'élément `from` pour l'insérer avant la position `to` (0..=len).
+    QueueMove(usize, usize),
+    /// Saute directement à l'élément `i` de la file (les précédents sont retirés).
+    QueuePlayAt(usize),
+    QueueClear,
+    ToggleMini,
 }
 
 pub struct App {
@@ -67,6 +84,16 @@ pub struct App {
     pl_tracks: Vec<PathBuf>,
     new_pl: Option<String>,
     rename_pl: Option<String>,
+
+    /// Titre réellement en lecture (peut venir de la file d'attente).
+    now: Option<PathBuf>,
+    /// File d'attente utilisateur, prioritaire sur la suite du dossier.
+    up_next: Vec<PathBuf>,
+    /// Élément de la file en cours de glisser-déposer.
+    drag_from: Option<usize>,
+    /// Mode mini (pochette + commandes de base) et taille à restaurer.
+    mini: bool,
+    full_size: Option<Vec2>,
 }
 
 impl App {
@@ -105,6 +132,11 @@ impl App {
             pl_tracks: Vec::new(),
             new_pl: None,
             rename_pl: None,
+            now: None,
+            up_next: Vec::new(),
+            drag_from: None,
+            mini: false,
+            full_size: None,
         };
         app.refresh_playlists();
         if !app.player.has_output() {
@@ -168,6 +200,12 @@ impl App {
 
     fn play_current(&mut self, ctx: &egui::Context, autoplay: bool) {
         let Some(path) = self.queue.current().cloned() else { return };
+        self.play_path(ctx, path, autoplay);
+    }
+
+    /// Charge et (éventuellement) lance n'importe quel fichier.
+    fn play_path(&mut self, ctx: &egui::Context, path: PathBuf, autoplay: bool) {
+        self.now = Some(path.clone());
         let (info, cover_bytes) = meta::read(&path, true);
         self.meta_cache.insert(path.clone(), info.clone());
         self.cur_info = info;
@@ -224,7 +262,26 @@ impl App {
         self.settings_dirty = true;
     }
 
+    /// Vrai si le titre en lecture est celui du contexte (et non un titre de la file).
+    fn playing_context(&self) -> bool {
+        self.now.is_some() && self.now.as_ref() == self.queue.current()
+    }
+
     fn next(&mut self, ctx: &egui::Context, auto: bool) {
+        // Répéter le titre : on rejoue ce qui est en cours, d'où qu'il vienne.
+        if auto && self.settings.repeat == Repeat::One {
+            if let Some(p) = self.now.clone() {
+                self.play_path(ctx, p, true);
+                return;
+            }
+        }
+        // La file d'attente passe avant la suite du dossier.
+        if !self.up_next.is_empty() {
+            let p = self.up_next.remove(0);
+            self.play_path(ctx, p, true);
+            return;
+        }
+        // Après un titre de la file, on reprend le contexte au titre suivant.
         if self.queue.next(self.settings.repeat, auto).is_some() {
             self.play_current(ctx, true);
         } else {
@@ -237,6 +294,9 @@ impl App {
         if self.player.position() > Duration::from_secs(3) {
             self.player.seek(Duration::ZERO);
             self.media_state = None;
+        } else if !self.playing_context() && self.queue.current().is_some() {
+            // On sortait de la file d'attente : retour au titre du contexte.
+            self.play_current(ctx, true);
         } else if self.queue.prev().is_some() {
             self.play_current(ctx, true);
         }
@@ -245,6 +305,8 @@ impl App {
     fn toggle(&mut self, ctx: &egui::Context) {
         if self.player.is_loaded() && !self.player.is_finished() {
             self.player.toggle();
+        } else if let Some(p) = self.now.clone() {
+            self.play_path(ctx, p, true);
         } else if !self.queue.is_empty() {
             self.play_current(ctx, true);
         }
@@ -319,6 +381,11 @@ impl App {
                 self.scan_missing(ctx, &self.pl_tracks);
             }
             Panel::Queue => self.scroll_to_current = true,
+            Panel::UpNext => {
+                let mut v = self.up_next.clone();
+                v.extend(self.queue.upcoming(40).into_iter().map(|i| self.queue.tracks[i].clone()));
+                self.scan_missing(ctx, &v);
+            }
             Panel::Playlists => self.refresh_playlists(),
             Panel::History => {
                 let recent: Vec<PathBuf> =
@@ -384,6 +451,47 @@ impl App {
             Act::Go(p) => self.go(ctx, p),
             Act::PickFolder => self.pick_folder(ctx),
             Act::PickFiles => self.pick_files(ctx),
+            Act::QueueAdd(p) => {
+                self.scan_missing(ctx, std::slice::from_ref(&p));
+                self.up_next.push(p);
+            }
+            Act::QueuePlayNext(p) => {
+                self.scan_missing(ctx, std::slice::from_ref(&p));
+                self.up_next.insert(0, p);
+            }
+            Act::QueueRemove(i) => {
+                if i < self.up_next.len() {
+                    self.up_next.remove(i);
+                }
+            }
+            Act::QueueMove(from, to) => {
+                if from < self.up_next.len() && to <= self.up_next.len() && to != from && to != from + 1 {
+                    let item = self.up_next.remove(from);
+                    let to = if to > from { to - 1 } else { to };
+                    self.up_next.insert(to, item);
+                }
+            }
+            Act::QueuePlayAt(i) => {
+                if i < self.up_next.len() {
+                    let mut rest = self.up_next.split_off(i);
+                    let p = rest.remove(0);
+                    self.up_next = rest;
+                    self.play_path(ctx, p, true);
+                }
+            }
+            Act::QueueClear => self.up_next.clear(),
+            Act::ToggleMini => self.toggle_mini(ctx),
+        }
+    }
+
+    fn toggle_mini(&mut self, ctx: &egui::Context) {
+        self.mini = !self.mini;
+        if self.mini {
+            self.full_size = ctx.input(|i| i.viewport().inner_rect.map(|r| r.size()));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(Vec2::new(MINI_W, MINI_H)));
+        } else {
+            let size = self.full_size.unwrap_or(Vec2::new(400.0, 700.0));
+            ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
         }
     }
 
@@ -417,6 +525,8 @@ impl App {
             (M::NONE, Key::Q),
             (M::NONE, Key::H),
             (M::NONE, Key::P),
+            (M::NONE, Key::D),
+            (M::NONE, Key::N),
         ];
         let mut keys: Vec<usize> = Vec::new();
         ctx.input_mut(|i| {
@@ -443,9 +553,11 @@ impl App {
                     let back = if matches!(self.panel, Panel::Playlist(_)) { Panel::Playlists } else { Panel::Queue };
                     self.go(ctx, back);
                 }
-                12 => self.go(ctx, Panel::Queue),
+                12 => self.go(ctx, Panel::UpNext),
                 13 => self.go(ctx, Panel::History),
                 14 => self.go(ctx, Panel::Playlists),
+                15 => self.go(ctx, Panel::Queue),
+                16 => self.toggle_mini(ctx),
                 _ => {}
             }
         }
@@ -557,37 +669,38 @@ impl App {
         }
         Self::window_resize(&ctx, card);
 
-        // ---- barre de titre : pastilles · emplacement
+        // ---- barre de titre : emplacement à gauche · boutons de fenêtre à droite
         let bar_h = 36.0;
         let ty = card.top() + bar_h / 2.0;
-        let dots_zone = Rect::from_min_size(card.min, Vec2::new(80.0, bar_h));
-        let show = ui.rect_contains_pointer(dots_zone);
-        if ui::window_dot(ui, "close", Pos2::new(card.left() + 20.0, ty), ui::DOT_CLOSE, icon::X, show).on_hover_text("Fermer").clicked() {
+        if ui::title_button(ui, "close", Pos2::new(card.right() - 22.0, ty), icon::X, true).on_hover_text("Fermer").clicked() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
-        if ui::window_dot(ui, "min", Pos2::new(card.left() + 38.0, ty), ui::DOT_MIN, icon::MINUS, show).on_hover_text("Réduire").clicked() {
+        if ui::title_button(ui, "min", Pos2::new(card.right() - 52.0, ty), icon::MINUS, false).on_hover_text("Réduire").clicked() {
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
         }
-        let theme_glyph = if ui::is_dark() { icon::SUN } else { icon::MOON };
-        let theme_tip = if ui::is_dark() { "Thème clair" } else { "Thème sombre" };
-        if ui::window_dot(ui, "theme", Pos2::new(card.left() + 56.0, ty), ui::DOT_THEME, theme_glyph, show)
-            .on_hover_text(theme_tip)
-            .clicked()
-        {
-            let d = !ui::is_dark();
-            self.set_dark(&ctx, d);
+        let (mini_glyph, mini_tip) =
+            if self.mini { (icon::ARROWS_OUT_SIMPLE, "Mode complet (N)") } else { (icon::ARROWS_IN_SIMPLE, "Mode mini (N)") };
+        if ui::title_button(ui, "mini", Pos2::new(card.right() - 82.0, ty), mini_glyph, false).on_hover_text(mini_tip).clicked() {
+            acts.push(Act::ToggleMini);
         }
         let loc = self.location();
-        let loc_max = card.width() - 190.0;
+        let loc_x = card.left() + 18.0;
+        let loc_max = card.right() - 100.0 - loc_x - 18.0;
         let lw = ui::text_width(ui, &loc, ui::regular(11.5)).min(loc_max);
-        let loc_rect = Rect::from_center_size(Pos2::new(card.center().x, ty), Vec2::new(lw + 16.0, 22.0));
+        let loc_rect = Rect::from_min_size(Pos2::new(loc_x - 4.0, ty - 11.0), Vec2::new(lw + 26.0, 22.0));
         let loc_r = ui.interact(loc_rect, ui.id().with("loc"), egui::Sense::click());
         let loc_col = if loc_r.hovered() { p.soft } else { p.dim };
-        ui::text(ui, loc_rect.center(), Align2::CENTER_CENTER, &loc, ui::regular(11.5), loc_col, loc_max);
+        ui::paint_icon(ui, Pos2::new(loc_x + 5.0, ty), icon::FOLDER_SIMPLE, ui::ph(12.0), loc_col);
+        ui::text(ui, Pos2::new(loc_x + 18.0, ty), Align2::LEFT_CENTER, &loc, ui::regular(11.5), loc_col, loc_max);
         if loc_r.on_hover_text("Ouvrir un dossier (Ctrl+O)").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             acts.push(Act::PickFolder);
         }
         ui.painter().hline(card.x_range(), card.top() + bar_h, Stroke::new(1.0, p.line));
+
+        if self.mini {
+            self.ui_mini(ui, card, bar_h, acts);
+            return;
+        }
 
         let left = card.left() + 24.0;
         let right = card.right() - 24.0;
@@ -601,6 +714,14 @@ impl App {
             ui.painter().add(s.as_shape(cov, 9));
         }
         ui::thumb(ui, cov, 9, self.cover.as_ref(), icon::MUSIC_NOTE);
+        let cov_r = ui.interact(cov, ui.id().with("cover"), egui::Sense::click());
+        if cov_r.hovered() {
+            ui.painter().rect_filled(cov, 9, Color32::from_black_alpha(70));
+            ui::paint_icon(ui, cov.center(), icon::ARROWS_IN_SIMPLE, ui::ph(20.0), Color32::WHITE);
+        }
+        if cov_r.on_hover_text("Mode mini").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            acts.push(Act::ToggleMini);
+        }
 
         let tx = cov.right() + 16.0;
         let tmax = right - 30.0 - tx;
@@ -728,17 +849,24 @@ impl App {
         let tabs_rect = Rect::from_min_max(Pos2::new(left, tabs_top), Pos2::new(right, tabs_top + 32.0));
         let sel = match self.panel {
             Panel::Queue => 0,
-            Panel::History => 1,
-            Panel::Playlists | Panel::Playlist(_) => 2,
+            Panel::UpNext => 1,
+            Panel::History => 2,
+            Panel::Playlists | Panel::Playlist(_) => 3,
         };
-        if let Some(i) = ui::tabs(ui, tabs_rect, &["File", "Historique", "Playlists"], sel) {
-            acts.push(Act::Go([Panel::Queue, Panel::History, Panel::Playlists][i].clone()));
+        let ctx_label = if self.is_folder_context() { "Dossier" } else { "Liste" };
+        let n_up = self.up_next.len();
+        let up_label = if n_up > 0 { format!("File d'attente · {n_up}") } else { "File d'attente".into() };
+        let (tab_click, tabs_end) = ui::tabs(ui, tabs_rect, &[ctx_label, &up_label, "Historique", "Playlists"], sel);
+        if let Some(i) = tab_click {
+            acts.push(Act::Go([Panel::Queue, Panel::UpNext, Panel::History, Panel::Playlists][i].clone()));
         }
-        // Action contextuelle à droite des onglets
-        let ac = Pos2::new(right, tabs_rect.center().y - 1.0);
+        // Action contextuelle (icône) à droite des onglets, seulement s'il reste de la place
+        let ac = Pos2::new(right - 10.0, tabs_rect.center().y - 1.0);
+        let room = tabs_end + 14.0 < ac.x - 13.0;
         match self.panel {
+            _ if !room => {}
             Panel::Queue => {
-                let r = ui::link(ui, "open_dir", ac, "Ouvrir", Some(icon::FOLDER_OPEN))
+                let r = ui::icon_button(ui, "open_dir", ac, 26.0, icon::FOLDER_OPEN, ui::ph(16.0), p.dim, true)
                     .on_hover_text("Ouvrir un dossier (Ctrl+O) — clic droit : fichiers");
                 if r.clicked() {
                     acts.push(Act::PickFolder);
@@ -754,37 +882,43 @@ impl App {
                     }
                 });
             }
+            Panel::UpNext if n_up > 0 => {
+                if ui::icon_button(ui, "clear_q", ac, 26.0, icon::TRASH, ui::ph(15.0), p.dim, true)
+                    .on_hover_text("Vider la file d'attente")
+                    .clicked()
+                {
+                    acts.push(Act::QueueClear);
+                }
+            }
             Panel::History if !self.history.is_empty() => {
-                if ui::link(ui, "clear_hist", ac, "Effacer", None).on_hover_text("Double-clic pour effacer l'historique").double_clicked() {
+                if ui::icon_button(ui, "clear_hist", ac, 26.0, icon::TRASH, ui::ph(15.0), p.dim, true)
+                    .on_hover_text("Double-clic pour effacer l'historique")
+                    .double_clicked()
+                {
                     self.history.clear();
                     self.storage.save_history(&mut self.history);
                 }
             }
             Panel::Playlists => {
-                if ui::link(ui, "new_pl", ac, "Nouvelle", Some(icon::PLUS)).clicked() && self.new_pl.is_none() {
+                if ui::icon_button(ui, "new_pl", ac, 26.0, icon::PLUS, ui::ph(16.0), p.dim, true)
+                    .on_hover_text("Nouvelle playlist")
+                    .clicked()
+                    && self.new_pl.is_none()
+                {
                     self.new_pl = Some(String::new());
                 }
             }
             _ => {}
         }
 
-        // Pied de carte
+        // Pied de carte : infos · bascule jour / nuit
         ui.painter().hline(card.x_range(), list_bottom, Stroke::new(1.0, p.line));
         let fy = list_bottom + footer_h / 2.0;
         ui::text(ui, Pos2::new(left, fy), Align2::LEFT_CENTER, &self.footer_info(), ui::regular(11.0), p.dim, w * 0.6);
-        let status = if self.settings.shuffle {
-            Some((icon::SHUFFLE, "Aléatoire activé"))
-        } else {
-            match self.settings.repeat {
-                Repeat::All => Some((icon::REPEAT, "Répéter tout")),
-                Repeat::One => Some((icon::REPEAT_ONCE, "Répéter le titre")),
-                Repeat::Off => None,
-            }
-        };
-        if let Some((g, label)) = status {
-            let tw = ui::text_width(ui, label, ui::regular(11.0));
-            ui::text(ui, Pos2::new(right, fy), Align2::RIGHT_CENTER, label, ui::regular(11.0), p.soft, w * 0.4);
-            ui::paint_icon(ui, Pos2::new(right - tw - 10.0, fy), g, ui::ph(12.0), p.soft);
+        let (tg, tl) = if ui::is_dark() { (icon::SUN, "Mode jour") } else { (icon::MOON, "Mode nuit") };
+        if ui::link(ui, "theme", Pos2::new(right, fy), tl, Some(tg)).clicked() {
+            let d = !ui::is_dark();
+            self.set_dark(&ctx, d);
         }
 
         // Liste (la barre de défilement déborde dans la marge droite)
@@ -793,9 +927,80 @@ impl App {
         child.set_clip_rect(area.expand2(Vec2::new(8.0, 0.0)));
         match self.panel.clone() {
             Panel::Queue => self.ui_queue(&mut child, acts),
+            Panel::UpNext => self.ui_upnext(&mut child, acts),
             Panel::History => self.ui_history(&mut child, acts),
             Panel::Playlists => self.ui_playlists(&mut child, acts),
             Panel::Playlist(name) => self.ui_playlist(&mut child, name, acts),
+        }
+    }
+
+    /// Vrai si le contexte est un dossier (et non une playlist ou une sélection).
+    fn is_folder_context(&self) -> bool {
+        self.queue
+            .current()
+            .and_then(|p| p.parent())
+            .and_then(|d| d.file_name())
+            .is_some_and(|n| n.to_string_lossy() == self.queue.source)
+    }
+
+    // ================================================================ mode mini
+
+    fn ui_mini(&mut self, ui: &mut egui::Ui, card: Rect, bar_h: f32, acts: &mut Vec<Act>) {
+        let ctx = ui.ctx().clone();
+        let p = ui::pal();
+        let left = card.left() + 18.0;
+        let right = card.right() - 18.0;
+        let cx = (left + right) / 2.0;
+        let has_track = self.queue.current().is_some() || self.now.is_some();
+
+        // Pochette pleine largeur : un clic ramène au mode complet
+        let size = (right - left).min(card.bottom() - card.top() - bar_h - 170.0).max(80.0);
+        let art = Rect::from_min_size(Pos2::new(cx - size / 2.0, card.top() + bar_h + 16.0), Vec2::splat(size));
+        if self.cover.is_some() {
+            let s = egui::epaint::Shadow { offset: [0, 6], blur: 18, spread: 0, color: p.shadow };
+            ui.painter().add(s.as_shape(art, 12));
+        }
+        ui::thumb(ui, art, 12, self.cover.as_ref(), icon::MUSIC_NOTE);
+        let ar = ui.interact(art, ui.id().with("mini_art"), egui::Sense::click());
+        if ar.hovered() {
+            let c = Pos2::new(art.right() - 20.0, art.top() + 20.0);
+            ui.painter().circle_filled(c, 14.0, Color32::from_black_alpha(110));
+            ui::paint_icon(ui, c, icon::ARROWS_OUT_SIMPLE, ui::ph(14.0), Color32::WHITE);
+        }
+        if ar.on_hover_text("Mode complet").on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+            acts.push(Act::ToggleMini);
+        }
+
+        // Titre / artiste
+        let y = art.bottom() + 16.0;
+        let w = right - left;
+        let title = if has_track { self.cur_info.title.as_str() } else { "Aucun son" };
+        ui::text(ui, Pos2::new(cx, y), Align2::CENTER_TOP, title, ui::semibold(14.5), p.text, w);
+        ui::text(ui, Pos2::new(cx, y + 21.0), Align2::CENTER_TOP, &self.cur_info.artist, ui::regular(12.0), p.dim, w);
+
+        // Progression
+        let py = y + 58.0;
+        let dur = self.duration().as_secs_f32();
+        let pos = self.seek_drag.unwrap_or_else(|| self.player.position().as_secs_f32()).min(dur);
+        let frac = if dur > 0.0 { pos / dur } else { 0.0 };
+        let seek_rect = Rect::from_min_size(Pos2::new(left, py - 7.0), Vec2::new(w, 14.0));
+        if let Some(f) = ui::bar(ui, "mini_seek", seek_rect, frac, dur > 0.0 && self.player.is_loaded(), 4.5) {
+            self.seek_drag = Some(f * dur);
+        } else if let Some(t) = self.seek_drag.take() {
+            self.player.seek(Duration::from_secs_f32(t));
+            self.media_state = None;
+        }
+
+        // Précédent · lecture · suivant
+        let cy = py + 38.0;
+        if ui::icon_button(ui, "mini_prev", Pos2::new(cx - 60.0, cy), 34.0, icon::SKIP_BACK, ui::ph(20.0), p.text, has_track).clicked() {
+            self.prev(&ctx);
+        }
+        if ui::play_button(ui, Pos2::new(cx, cy), 20.0, self.player.is_playing(), has_track).clicked() {
+            self.toggle(&ctx);
+        }
+        if ui::icon_button(ui, "mini_next", Pos2::new(cx + 60.0, cy), 34.0, icon::SKIP_FORWARD, ui::ph(20.0), p.text, has_track).clicked() {
+            self.next(&ctx, false);
         }
     }
 
@@ -868,8 +1073,33 @@ impl App {
             acts.push(play);
             ui.close_menu();
         }
+        if ui::menu_item(ui, icon::ARROW_BEND_DOWN_RIGHT, "Lire ensuite").clicked() {
+            acts.push(Act::QueuePlayNext(p.to_path_buf()));
+            ui.close_menu();
+        }
+        if ui::menu_item(ui, icon::PLUS_CIRCLE, "Ajouter à la file d'attente").clicked() {
+            acts.push(Act::QueueAdd(p.to_path_buf()));
+            ui.close_menu();
+        }
         ui::menu_separator(ui);
         self.playlist_choices(ui, p, acts);
+    }
+
+    /// Bouton ⊕ / ✓ de mise en file d'attente pour un titre.
+    fn queue_action(&self, p: &Path) -> ui::RowAction<'static> {
+        if self.up_next.iter().any(|q| q == p) {
+            Some((icon::CHECK_CIRCLE, true, "Dans la file d'attente — cliquer pour retirer"))
+        } else {
+            Some((icon::PLUS_CIRCLE, false, "Ajouter à la file d'attente"))
+        }
+    }
+
+    /// Clic sur ⊕ / ✓ : ajoute ou retire le titre de la file.
+    fn queue_toggle(&self, p: &Path, acts: &mut Vec<Act>) {
+        match self.up_next.iter().position(|q| q == p) {
+            Some(i) => acts.push(Act::QueueRemove(i)),
+            None => acts.push(Act::QueueAdd(p.to_path_buf())),
+        }
     }
 
     fn ui_queue(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
@@ -880,7 +1110,7 @@ impl App {
             }
             return;
         }
-        let cur = self.queue.current_index();
+        let cur = if self.playing_context() { self.queue.current_index() } else { None };
         let mut sa = egui::ScrollArea::vertical().auto_shrink(false).id_salt("queue");
         if self.scroll_to_current {
             if let Some(c) = cur {
@@ -893,12 +1123,117 @@ impl App {
             for i in range {
                 let p = &self.queue.tracks[i];
                 let (title, kind, d) = self.track_texts(p);
-                let r = ui::list_row(ui, self.thumbs.get(p), icon::MUSIC_NOTE, Some(&kind), &title, &d, cur == Some(i), i + 1 < n);
-                if r.clicked() {
+                let (r, add) = ui::list_row_ex(
+                    ui, self.thumbs.get(p), icon::MUSIC_NOTE, Some(&kind), &title, &d, cur == Some(i), i + 1 < n, self.queue_action(p),
+                );
+                if add {
+                    self.queue_toggle(p, acts);
+                } else if r.clicked() {
                     acts.push(Act::PlayIndex(i));
                 }
                 r.context_menu(|ui| self.track_menu(ui, p, Act::PlayIndex(i), acts));
             }
+        });
+    }
+
+    /// File d'attente façon Spotify : en cours · ta file (réordonnable) · suite du contexte.
+    fn ui_upnext(&mut self, ui: &mut egui::Ui, acts: &mut Vec<Act>) {
+        let p = ui::pal();
+        let upcoming = self.queue.upcoming(40);
+        if self.now.is_none() && self.up_next.is_empty() && upcoming.is_empty() {
+            Self::empty_state(ui, "La file d'attente est vide.\nAjoute des titres avec ⊕ dans les autres onglets.", None);
+            return;
+        }
+        let pointer = ui.input(|i| i.pointer.interact_pos());
+        let released = ui.input(|i| i.pointer.any_released());
+        egui::ScrollArea::vertical().auto_shrink(false).id_salt("upnext").show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+
+            // En cours
+            if let Some(now) = self.now.clone() {
+                ui::section_label(ui, "EN COURS");
+                let (title, kind, d) = self.track_texts(&now);
+                let r = ui::list_row(ui, self.thumbs.get(&now), icon::MUSIC_NOTE, Some(&kind), &title, &d, true, false);
+                r.context_menu(|ui| self.playlist_choices(ui, &now, acts));
+            }
+
+            // Ta file : glisser pour réordonner
+            if !self.up_next.is_empty() {
+                ui.add_space(6.0);
+                ui::section_label(ui, "ENSUITE DANS TA FILE");
+                let n = self.up_next.len();
+                let mut rects = Vec::with_capacity(n);
+                for i in 0..n {
+                    let q = &self.up_next[i];
+                    let (title, kind, d) = self.track_texts(q);
+                    let dragging = self.drag_from == Some(i);
+                    let (r, removed) = ui::queue_row(ui, self.thumbs.get(q), &kind, &title, &d, dragging, i + 1 < n);
+                    rects.push(r.rect);
+                    if removed {
+                        acts.push(Act::QueueRemove(i));
+                    } else if r.drag_started() {
+                        self.drag_from = Some(i);
+                    } else if r.clicked() {
+                        acts.push(Act::QueuePlayAt(i));
+                    }
+                    r.context_menu(|ui| {
+                        if ui::menu_item(ui, icon::PLAY, "Lire maintenant").clicked() {
+                            acts.push(Act::QueuePlayAt(i));
+                            ui.close_menu();
+                        }
+                        if i > 0 && ui::menu_item(ui, icon::ARROW_UP, "Monter").clicked() {
+                            acts.push(Act::QueueMove(i, i - 1));
+                            ui.close_menu();
+                        }
+                        if i + 1 < n && ui::menu_item(ui, icon::ARROW_DOWN, "Descendre").clicked() {
+                            acts.push(Act::QueueMove(i, i + 2));
+                            ui.close_menu();
+                        }
+                        if ui::menu_item(ui, icon::X, "Retirer de la file").clicked() {
+                            acts.push(Act::QueueRemove(i));
+                            ui.close_menu();
+                        }
+                    });
+                }
+                // Glisser-déposer : ligne d'insertion puis déplacement au relâchement
+                if let (Some(from), Some(pos)) = (self.drag_from, pointer) {
+                    let target = rects.iter().filter(|r| r.center().y < pos.y).count();
+                    let y = if target < rects.len() { rects[target].top() } else { rects[rects.len() - 1].bottom() };
+                    let x0 = rects[0].left();
+                    let x1 = rects[0].right();
+                    ui.painter().hline(x0..=x1, y, Stroke::new(2.0, p.accent));
+                    ui.painter().circle_filled(Pos2::new(x0, y), 3.5, p.accent);
+                    if released {
+                        acts.push(Act::QueueMove(from, target));
+                        self.drag_from = None;
+                    }
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                }
+                if released {
+                    self.drag_from = None;
+                }
+            }
+
+            // Suite du contexte
+            if !upcoming.is_empty() {
+                ui.add_space(6.0);
+                let label = format!("ENSUITE DEPUIS : {}", self.queue.source.to_uppercase());
+                ui::section_label(ui, &label);
+                let n = upcoming.len();
+                for (k, &i) in upcoming.iter().enumerate() {
+                    let t = &self.queue.tracks[i];
+                    let (title, kind, d) = self.track_texts(t);
+                    let (r, add) =
+                        ui::list_row_ex(ui, self.thumbs.get(t), icon::MUSIC_NOTE, Some(&kind), &title, &d, false, k + 1 < n, self.queue_action(t));
+                    if add {
+                        self.queue_toggle(t, acts);
+                    } else if r.clicked() {
+                        acts.push(Act::PlayIndex(i));
+                    }
+                    r.context_menu(|ui| self.track_menu(ui, t, Act::PlayIndex(i), acts));
+                }
+            }
+            ui.add_space(8.0);
         });
     }
 
@@ -921,9 +1256,13 @@ impl App {
                     .unwrap_or_default();
                 let title = if h.artist.is_empty() { h.title.clone() } else { format!("{} — {}", h.title, h.artist) };
                 let kind = meta::ext_kind(&h.path);
-                let r = ui::list_row(ui, self.thumbs.get(&h.path), icon::MUSIC_NOTE, Some(&kind), &title, &when, false, k + 1 < n)
-                    .on_hover_text(h.path.display().to_string());
-                if r.clicked() {
+                let (r, add) = ui::list_row_ex(
+                    ui, self.thumbs.get(&h.path), icon::MUSIC_NOTE, Some(&kind), &title, &when, false, k + 1 < n, self.queue_action(&h.path),
+                );
+                let r = r.on_hover_text(h.path.display().to_string());
+                if add {
+                    self.queue_toggle(&h.path, acts);
+                } else if r.clicked() {
                     acts.push(Act::OpenFile(h.path.clone()));
                 }
                 r.context_menu(|ui| self.track_menu(ui, &h.path, Act::OpenFile(h.path.clone()), acts));
@@ -1037,13 +1376,20 @@ impl App {
             for i in range {
                 let tp = &self.pl_tracks[i];
                 let (title, kind, d) = self.track_texts(tp);
-                let r = ui::list_row(ui, self.thumbs.get(tp), icon::MUSIC_NOTE, Some(&kind), &title, &d, false, i + 1 < n);
-                if r.clicked() {
+                let (r, add) =
+                    ui::list_row_ex(ui, self.thumbs.get(tp), icon::MUSIC_NOTE, Some(&kind), &title, &d, false, i + 1 < n, self.queue_action(tp));
+                if add {
+                    self.queue_toggle(tp, acts);
+                } else if r.clicked() {
                     acts.push(Act::PlayPlaylist(name.clone(), i));
                 }
                 r.context_menu(|ui| {
                     if ui::menu_item(ui, icon::PLAY, "Lire à partir d'ici").clicked() {
                         acts.push(Act::PlayPlaylist(name.clone(), i));
+                        ui.close_menu();
+                    }
+                    if ui::menu_item(ui, icon::ARROW_BEND_DOWN_RIGHT, "Lire ensuite").clicked() {
+                        acts.push(Act::QueuePlayNext(tp.clone()));
                         ui.close_menu();
                     }
                     if ui::menu_item(ui, icon::X, "Retirer de la playlist").clicked() {

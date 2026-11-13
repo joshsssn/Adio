@@ -16,10 +16,10 @@ fn main() -> eframe::Result {
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Adio")
-        .with_inner_size([384.0, 660.0])
+        .with_inner_size([400.0, 700.0])
         .with_decorations(false)
         .with_transparent(true)
-        .with_min_inner_size([340.0, 270.0])
+        .with_min_inner_size([280.0, 260.0])
         .with_drag_and_drop(true);
     if let Ok(img) = image::load_from_memory(include_bytes!("../assets/icon-256.png")) {
         let img = img.to_rgba8();

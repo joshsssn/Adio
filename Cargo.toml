@@ -1,6 +1,6 @@
 [package]
 name = "adio"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Petit lecteur audio portable et ultra rapide"
 license = "MIT"

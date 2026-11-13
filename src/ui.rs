@@ -76,11 +76,6 @@ pub fn is_dark() -> bool {
     IS_DARK.load(Ordering::Relaxed)
 }
 
-// Couleurs des pastilles de fenêtre (identiques dans les deux thèmes)
-pub const DOT_CLOSE: Color32 = rgb(0x8B, 0xA3, 0x86);
-pub const DOT_MIN: Color32 = rgb(0xE0, 0xBE, 0x98);
-pub const DOT_THEME: Color32 = rgb(0xD3, 0xD2, 0xCE);
-
 // ---------------------------------------------------------------- polices
 
 pub fn regular(size: f32) -> FontId {
@@ -220,13 +215,18 @@ pub fn icon_button(ui: &mut Ui, id: &str, center: Pos2, size: f32, glyph: &str, 
     hand(r, enabled)
 }
 
-/// Pastille de fenêtre (fermer / réduire / thème) ; le symbole apparaît au survol de la barre.
-pub fn window_dot(ui: &mut Ui, id: &str, center: Pos2, color: Color32, glyph: &str, show_glyph: bool) -> Response {
-    let r = ui.interact(Rect::from_center_size(center, Vec2::splat(16.0)), ui.id().with(id), Sense::click());
-    ui.painter().circle_filled(center, 5.5, color);
-    if show_glyph {
-        paint_icon(ui, center, glyph, ph(8.0), Color32::from_black_alpha(150));
-    }
+/// Bouton de barre de titre (mini, réduire, fermer). `danger` = survol rouge.
+pub fn title_button(ui: &mut Ui, id: &str, center: Pos2, glyph: &str, danger: bool) -> Response {
+    let p = pal();
+    let rect = Rect::from_center_size(center, Vec2::new(28.0, 24.0));
+    let r = ui.interact(rect, ui.id().with(id), Sense::click());
+    let (bg, fg) = match (r.hovered(), danger) {
+        (true, true) => (rgb(0xE0, 0x4F, 0x45), Color32::WHITE),
+        (true, false) => (p.hover, p.text),
+        _ => (Color32::TRANSPARENT, p.dim),
+    };
+    ui.painter().rect_filled(rect, 6, bg);
+    paint_icon(ui, center, glyph, ph(13.0), fg);
     r
 }
 
@@ -278,8 +278,8 @@ pub fn badge(ui: &Ui, left_center: Pos2, label: &str) -> f32 {
     w
 }
 
-/// Onglets texte soulignés. Renvoie l'index cliqué.
-pub fn tabs(ui: &mut Ui, rect: Rect, labels: &[&str], selected: usize) -> Option<usize> {
+/// Onglets texte soulignés. Renvoie (index cliqué, abscisse de fin des onglets).
+pub fn tabs(ui: &mut Ui, rect: Rect, labels: &[&str], selected: usize) -> (Option<usize>, f32) {
     let p = pal();
     let mut x = rect.left();
     let mut clicked = None;
@@ -297,10 +297,10 @@ pub fn tabs(ui: &mut Ui, rect: Rect, labels: &[&str], selected: usize) -> Option
         if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
             clicked = Some(i);
         }
-        x += w + 22.0;
+        x += w + 20.0;
     }
     ui.painter().hline(rect.x_range(), rect.bottom() - 0.5, Stroke::new(1.0, p.line));
-    clicked
+    (clicked, x - 20.0)
 }
 
 /// Vignette carrée arrondie : texture ou tuile neutre avec icône.
@@ -329,12 +329,31 @@ pub fn list_row(
     current: bool,
     separator: bool,
 ) -> Response {
+    list_row_ex(ui, tex, glyph, badge_label, title, right, current, separator, None).0
+}
+
+/// Bouton d'action de ligne : (icône, actif, info-bulle).
+pub type RowAction<'a> = Option<(&'a str, bool, &'a str)>;
+
+/// Ligne de liste avec bouton d'action à droite (visible au survol, ou en permanence s'il est actif).
+/// Renvoie (réponse de la ligne, action cliquée).
+pub fn list_row_ex(
+    ui: &mut Ui,
+    tex: Option<&egui::TextureHandle>,
+    glyph: &str,
+    badge_label: Option<&str>,
+    title: &str,
+    right: &str,
+    current: bool,
+    separator: bool,
+    action: RowAction,
+) -> (Response, bool) {
     let p = pal();
     let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width() - GUTTER, ROW_H), Sense::click());
     if !ui.is_rect_visible(rect) {
-        return r;
+        return (r, false);
     }
-    let hovered = r.hovered();
+    let hovered = ui.rect_contains_pointer(rect);
     if hovered {
         ui.painter().rect_filled(rect.expand2(Vec2::new(6.0, -2.0)), 8, p.hover);
     }
@@ -347,7 +366,20 @@ pub fn list_row(
     if let Some(b) = badge_label.filter(|b| !b.is_empty()) {
         x += badge(ui, Pos2::new(x, cy), b) + 10.0;
     }
-    let right_w = if right.is_empty() {
+
+    // Bouton d'action (⊕ / ✓) : remplace l'info de droite quand il est visible.
+    let mut clicked = false;
+    let show_action = action.is_some_and(|(_, active, _)| hovered || active);
+    let right_w = if let (true, Some((g, active, tip))) = (show_action, action) {
+        let c = Pos2::new(rect.right() - 10.0, cy);
+        let br = Rect::from_center_size(c, Vec2::splat(26.0));
+        let a = ui.interact(br, ui.id().with(("row_action", rect.top() as i32)), Sense::click());
+        let col = if active { p.accent } else if a.hovered() { p.text } else { p.dim };
+        let font = if active { phf(18.0) } else { ph(18.0) };
+        paint_icon(ui, c, g, font, col);
+        clicked = a.on_hover_text(tip).on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        30.0
+    } else if right.is_empty() {
         0.0
     } else {
         let col = if current { p.accent } else { p.faint };
@@ -358,7 +390,66 @@ pub fn list_row(
     if separator {
         ui.painter().hline(sep_x..=rect.right(), rect.bottom() - 0.5, Stroke::new(1.0, p.line));
     }
-    hand(r, true)
+    (hand(r, true), clicked)
+}
+
+/// Ligne de la file d'attente : glisser pour réordonner, ✕ pour retirer.
+/// Renvoie (réponse de la ligne, retirer cliqué).
+pub fn queue_row(
+    ui: &mut Ui,
+    tex: Option<&egui::TextureHandle>,
+    badge_label: &str,
+    title: &str,
+    right: &str,
+    dragging: bool,
+    separator: bool,
+) -> (Response, bool) {
+    let p = pal();
+    let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width() - GUTTER, ROW_H), Sense::click_and_drag());
+    if !ui.is_rect_visible(rect) {
+        return (r, false);
+    }
+    let hovered = ui.rect_contains_pointer(rect) || dragging;
+    if dragging {
+        ui.painter().rect(rect.expand2(Vec2::new(6.0, -2.0)), 8, p.hover, Stroke::new(1.0, p.track), egui::StrokeKind::Inside);
+    } else if hovered {
+        ui.painter().rect_filled(rect.expand2(Vec2::new(6.0, -2.0)), 8, p.hover);
+    }
+    let cy = rect.center().y;
+    let t = Rect::from_min_size(Pos2::new(rect.left(), cy - 16.0), Vec2::splat(32.0));
+    thumb(ui, t, 6, tex, icon::MUSIC_NOTE);
+    let mut x = t.right() + 14.0;
+    let sep_x = x;
+    x += badge(ui, Pos2::new(x, cy), badge_label) + 10.0;
+
+    let mut removed = false;
+    let right_w = if hovered {
+        // Poignée de déplacement + bouton retirer
+        paint_icon(ui, Pos2::new(rect.right() - 40.0, cy), icon::DOTS_SIX_VERTICAL, ph(16.0), p.dim);
+        let c = Pos2::new(rect.right() - 10.0, cy);
+        let a = ui.interact(Rect::from_center_size(c, Vec2::splat(26.0)), ui.id().with(("q_rm", rect.top() as i32)), Sense::click());
+        paint_icon(ui, c, icon::X, ph(15.0), if a.hovered() { p.text } else { p.dim });
+        removed = a.on_hover_text("Retirer de la file").on_hover_cursor(egui::CursorIcon::PointingHand).clicked();
+        58.0
+    } else if right.is_empty() {
+        0.0
+    } else {
+        text(ui, Pos2::new(rect.right(), cy), Align2::RIGHT_CENTER, right, regular(11.5), p.faint, 80.0).width() + 12.0
+    };
+    let col = if hovered { p.text } else { p.soft };
+    text(ui, Pos2::new(x, cy), Align2::LEFT_CENTER, title, regular(13.0), col, rect.right() - right_w - x);
+    if separator {
+        ui.painter().hline(sep_x..=rect.right(), rect.bottom() - 0.5, Stroke::new(1.0, p.line));
+    }
+    let cursor = if dragging { egui::CursorIcon::Grabbing } else { egui::CursorIcon::Grab };
+    (r.on_hover_cursor(cursor), removed)
+}
+
+/// Petit intitulé de section (EN COURS, ENSUITE…).
+pub fn section_label(ui: &mut Ui, label: &str) -> Rect {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width() - GUTTER, 30.0), Sense::hover());
+    text(ui, Pos2::new(rect.left(), rect.center().y + 3.0), Align2::LEFT_CENTER, label, semibold(10.5), pal().dim, rect.width());
+    rect
 }
 
 /// Élément de menu contextuel.

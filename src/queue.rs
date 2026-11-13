@@ -84,6 +84,11 @@ impl Queue {
         }
     }
 
+    /// Index (dans `tracks`) des `n` prochaines pistes, dans l'ordre de lecture.
+    pub fn upcoming(&self, n: usize) -> Vec<usize> {
+        self.order.iter().skip(self.pos + 1).take(n).copied().collect()
+    }
+
     /// Sélectionne directement la piste d'index `i` (dans `tracks`).
     pub fn jump(&mut self, i: usize) -> Option<&PathBuf> {
         self.pos = self.order.iter().position(|&x| x == i)?;

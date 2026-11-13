@@ -19,7 +19,9 @@
 
 ## Fonctionnalités
 
-- **Interface minimaliste** : une carte compacte sans bordure, en thème clair ou sombre (il suit Windows, ou se bascule avec la 3ᵉ pastille). Elle affiche la pochette, le format audio (`FLAC · 44.1 kHz · 16-bit`), une barre de progression fine, les commandes et le volume sur une seule ligne, puis les onglets File, Historique et Playlists.
+- **Interface minimaliste** : une carte compacte sans bordure, en mode jour ou nuit (bascule en bas à droite, ou suit Windows). Elle affiche la pochette, le format audio (`FLAC · 44.1 kHz · 16-bit`), une barre de progression fine, les commandes et le volume sur une seule ligne.
+- **Mode mini** : clique sur la pochette pour ne garder que l'artwork, le titre, la progression et précédent / lecture / suivant. Un nouveau clic revient au mode complet.
+- **File d'attente** (comme Spotify) : le bouton ⊕ sur chaque titre l'ajoute à la file, qui passe avant la suite du dossier. Dans l'onglet *File d'attente*, glisse les titres pour les réordonner et retire-les avec ✕. Le clic droit propose aussi *Lire ensuite*.
 - **Lecture de dossier** : ouvre un son et Adio charge tout son dossier. *Suivant* joue le titre suivant du même dossier, en ordre naturel (`2` avant `10`).
 - **Formats** : MP3, WAV, AIFF, FLAC, ALAC / AAC (`.m4a`), OGG Vorbis.
 - **Pochette et tags** : affiche l'artwork intégré, le titre, l'artiste et l'album. Sans tags, le nom du fichier sert de titre.
@@ -46,8 +48,9 @@
 | `R` | Répétition (off → tout → un) |
 | `M` | Muet |
 | `Ctrl + O` | Ouvrir un dossier |
-| `Q` / `H` / `P` | Afficher la file / l'historique / les playlists |
-| `Échap` | Revenir à la file |
+| `D` / `Q` / `H` / `P` | Onglet Dossier / File d'attente / Historique / Playlists |
+| `N` | Mode mini |
+| `Échap` | Revenir à l'onglet Dossier |
 
 Le chemin affiché dans la barre de titre est cliquable : il ouvre un nouveau dossier.
 
