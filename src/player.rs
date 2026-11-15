@@ -40,7 +40,7 @@ impl Player {
         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
             builder = builder.with_hint(&ext.to_ascii_lowercase());
         }
-        let decoder = builder.build().map_err(|e| format!("Format non supporté : {e}"))?;
+        let decoder = builder.build().map_err(|e| unsupported_reason(path, &e.to_string()))?;
         self.decoder_duration = decoder.total_duration();
         let sink = Sink::connect_new(stream.mixer());
         sink.set_volume(self.volume * self.volume);
@@ -110,5 +110,17 @@ impl Player {
             // Courbe perceptuelle : le slider linéaire « sonne » plus naturel.
             s.set_volume(self.volume * self.volume);
         }
+    }
+}
+
+/// Message d'erreur lisible : distingue les fantômes iCloud des vrais formats inconnus.
+fn unsupported_reason(path: &Path, err: &str) -> String {
+    use std::io::Read;
+    let mut head = [0u8; 8];
+    let is_bplist = File::open(path).and_then(|mut f| f.read_exact(&mut head)).is_ok() && &head == b"bplist00";
+    if is_bplist {
+        "Fichier vide : simple référence iCloud, le son n'a jamais été téléchargé".into()
+    } else {
+        format!("Format non supporté : {err}")
     }
 }

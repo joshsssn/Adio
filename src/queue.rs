@@ -10,6 +10,10 @@ pub const AUDIO_EXTS: &[&str] = &[
 ];
 
 pub fn is_audio(p: &Path) -> bool {
+    // « ._titre.mp3 » : métadonnées AppleDouble laissées par macOS, pas du son.
+    if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("._")) {
+        return false;
+    }
     p.extension()
         .and_then(|e| e.to_str())
         .is_some_and(|e| AUDIO_EXTS.contains(&e.to_ascii_lowercase().as_str()))
@@ -185,6 +189,12 @@ mod tests {
 
     fn q(n: usize, shuffle: bool) -> Queue {
         Queue::from_tracks((0..n).map(|i| PathBuf::from(format!("{i}.mp3"))).collect(), 0, shuffle, String::new())
+    }
+
+    #[test]
+    fn apple_double_ignored() {
+        assert!(is_audio(Path::new("a/Titre.mp3")));
+        assert!(!is_audio(Path::new("a/._Titre.mp3")));
     }
 
     #[test]

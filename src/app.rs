@@ -125,7 +125,9 @@ impl App {
         let settings = storage.load_settings();
         let system_dark = cc.egui_ctx.system_theme() == Some(egui::Theme::Dark);
         ui::set_theme(&cc.egui_ctx, settings.dark.unwrap_or(system_dark));
-        let history = storage.load_history();
+        let mut history = storage.load_history();
+        // Anciennes versions : un titre en répétition s'inscrivait à chaque tour.
+        history.dedup_by(|a, b| a.path == b.path);
         let (meta_tx, meta_rx) = channel();
         let media = MediaKeys::new(window_hwnd(cc), cc.egui_ctx.clone());
 
@@ -198,6 +200,7 @@ impl App {
     fn open_path(&mut self, ctx: &egui::Context, p: &Path, autoplay: bool) {
         let shuffle = self.settings.shuffle;
         let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let whole = p.is_dir() || ext == "m3u8" || ext == "m3u";
         let q = if p.is_dir() {
             Queue::from_folder(p, shuffle)
         } else if ext == "m3u8" || ext == "m3u" {
@@ -210,6 +213,10 @@ impl App {
             return;
         }
         self.set_queue(ctx, q, autoplay);
+        // Dossier ou playlist : si le premier titre est illisible, on passe au suivant lisible.
+        if whole && autoplay && !self.player.is_loaded() {
+            self.next(ctx, false);
+        }
     }
 
     fn open_files(&mut self, ctx: &egui::Context, files: Vec<PathBuf>) {
@@ -240,10 +247,11 @@ impl App {
         self.play_path(ctx, path, autoplay);
     }
 
-    /// Charge et (éventuellement) lance n'importe quel fichier.
-    fn play_path(&mut self, ctx: &egui::Context, path: PathBuf, autoplay: bool) {
+    /// Charge et (éventuellement) lance n'importe quel fichier. Faux si le fichier est illisible.
+    fn play_path(&mut self, ctx: &egui::Context, path: PathBuf, autoplay: bool) -> bool {
         if !self.history_nav {
-            if let Some(cur) = self.now.clone().filter(|c| *c != path) {
+            // Un titre illisible n'a pas été écouté : « Précédent » ne doit pas y revenir.
+            if let Some(cur) = self.now.clone().filter(|c| *c != path && self.player.is_loaded()) {
                 self.back.push(cur);
                 if self.back.len() > 500 {
                     self.back.remove(0);
@@ -295,7 +303,9 @@ impl App {
         }
         self.media_state = None;
 
-        if autoplay && self.error.is_none() {
+        let ok = self.error.is_none();
+        // Un titre rejoué à la suite (répétition) ne compte qu'une fois dans l'historique.
+        if autoplay && ok && self.history.last().is_none_or(|h| h.path != path) {
             self.history.push(HistoryEntry {
                 path: path.clone(),
                 title: self.cur_info.title.clone(),
@@ -306,14 +316,35 @@ impl App {
         }
         self.settings.last_path = Some(path);
         self.settings_dirty = true;
+        ok
     }
 
+    /// Titre suivant. Les fichiers illisibles sont sautés jusqu'à en trouver un qui joue.
     fn next(&mut self, ctx: &egui::Context, auto: bool) {
+        let mut repeat = self.settings.repeat;
+        let tries = self.queue.tracks.len() + self.up_next.len() + self.forward.len() + 1;
+        for _ in 0..tries {
+            match self.next_once(ctx, auto, repeat) {
+                Some(false) => {
+                    // Rejouer en boucle un titre illisible ne mènerait nulle part.
+                    if repeat == Repeat::One {
+                        repeat = Repeat::All;
+                    }
+                }
+                _ => return,
+            }
+        }
+        // Rien de lisible : on s'arrête sur le dernier essai, son erreur reste affichée.
+        self.player.stop();
+        self.media_state = None;
+    }
+
+    /// Un pas de `next`. `None` = fin de liste, `Some(ok)` = un titre a été chargé (ou pas).
+    fn next_once(&mut self, ctx: &egui::Context, auto: bool, repeat: Repeat) -> Option<bool> {
         // Répéter le titre : on rejoue ce qui est en cours, d'où qu'il vienne.
-        if auto && self.settings.repeat == Repeat::One {
+        if auto && repeat == Repeat::One {
             if let Some(p) = self.now.clone() {
-                self.play_path(ctx, p, true);
-                return;
+                return Some(self.play_path(ctx, p, true));
             }
         }
         // Après un ou plusieurs « précédent », on repasse par les titres déjà écoutés.
@@ -322,22 +353,22 @@ impl App {
                 self.back.push(cur);
             }
             self.history_nav = true;
-            self.play_path(ctx, p, true);
+            let ok = self.play_path(ctx, p, true);
             self.history_nav = false;
-            return;
+            return Some(ok);
         }
         // La file d'attente passe avant la suite du dossier.
         if !self.up_next.is_empty() {
             let p = self.up_next.remove(0);
-            self.play_path(ctx, p, true);
-            return;
+            return Some(self.play_path(ctx, p, true));
         }
         // Après un titre de la file, on reprend le contexte au titre suivant.
-        if self.queue.next(self.settings.repeat, auto).is_some() {
-            self.play_current(ctx, true);
+        if let Some(p) = self.queue.next(repeat, auto).cloned() {
+            Some(self.play_path(ctx, p, true))
         } else {
             self.player.stop();
             self.media_state = None;
+            None
         }
     }
 
